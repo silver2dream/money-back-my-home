@@ -55,7 +55,13 @@ def fetch_history(ticker: str, years: int = 10):
     if len(closes) < TRADING_DAYS:
         raise EngineError(f"「{ticker}」歷史資料不足一年({len(closes)} 個交易日),樣本太少無法可靠模擬。")
 
-    name, currency = ticker, "USD"
+    name, currency, div_yield = ticker, "USD", 0.0
+    try:  # 近一年實際配息 ÷ 現價(info 的 dividendYield 各版本單位不一,不可靠)
+        if "Dividends" in df.columns:
+            paid = float(df["Dividends"].iloc[-TRADING_DAYS:].sum())
+            div_yield = float(np.clip(paid / float(closes.iloc[-1]), 0.0, 0.15))
+    except Exception:
+        pass
     try:
         fi = tk.fast_info
         currency = getattr(fi, "currency", None) or "USD"
@@ -68,7 +74,8 @@ def fetch_history(ticker: str, years: int = 10):
         pass
 
     dates = [d.strftime("%Y-%m-%d") for d in closes.index]
-    meta = {"ticker": ticker, "name": name, "currency": currency, "as_of": dates[-1]}
+    meta = {"ticker": ticker, "name": name, "currency": currency,
+            "as_of": dates[-1], "div_yield": div_yield}
     return closes.to_numpy(dtype=float), dates, meta
 
 
@@ -89,19 +96,167 @@ def basic_stats(closes: np.ndarray) -> dict:
 
 # ---------------------------------------------------------------- 模擬
 
+COND_BLOCKS = 3   # 條件化只作用於前 3 個區塊(約一季)— 狀態資訊的可預測性隨時間衰減
+
+
 def simulate_paths(log_ret: np.ndarray, spot: float, n_paths: int, horizon: int,
-                   seed: int = 42) -> np.ndarray:
-    """Block bootstrap。回傳 (n_paths, horizon+1),[:,0] = spot。"""
+                   seed: int = 42, start_pool: np.ndarray = None,
+                   fat_tails: bool = False) -> np.ndarray:
+    """Block bootstrap。回傳 (n_paths, horizon+1),[:,0] = spot。
+
+    start_pool:條件化 — 前 COND_BLOCKS 個區塊(約一季)的起點只從這些歷史索引抽,
+                之後回歸無條件(避免把當前市場狀態鎖死整個模擬窗口);None = 全程無條件。
+    fat_tails:疊加小幅 t(4) 噪音(scale = 15% 日波動)— 平滑分佈並加厚尾部,
+               讓模擬能產生略超出歷史極值的情境(smoothed bootstrap)。"""
     rng = np.random.default_rng(seed)
     block = min(BLOCK_SIZE, len(log_ret))
     n_blocks = math.ceil(horizon / block)
-    starts = rng.integers(0, len(log_ret) - block + 1, size=(n_paths, n_blocks))
+    max_start = len(log_ret) - block
+    pool = None
+    if start_pool is not None:
+        pool = start_pool[start_pool <= max_start]
+        if len(pool) < 50:          # 條件樣本過少 → 退回無條件
+            pool = None
+    starts = rng.integers(0, max_start + 1, size=(n_paths, n_blocks))
+    if pool is not None:
+        nc = min(COND_BLOCKS, n_blocks)
+        starts[:, :nc] = rng.choice(pool, size=(n_paths, nc))
     idx = (starts[:, :, None] + np.arange(block)[None, None, :]).reshape(n_paths, -1)[:, :horizon]
-    cum = np.cumsum(log_ret[idx], axis=1)
+    sim = log_ret[idx]
+    if fat_tails:
+        sim = sim + rng.standard_t(4, size=sim.shape) * (log_ret.std() * 0.15)
+    cum = np.cumsum(sim, axis=1)
     prices = np.empty((n_paths, horizon + 1))
     prices[:, 0] = spot
     prices[:, 1:] = spot * np.exp(cum)
     return prices
+
+
+# ---------------------------------------------------------------- 市場狀態(條件化模擬)
+
+def regime_state(closes: np.ndarray) -> dict:
+    """當前市場狀態:趨勢(現價 vs 200 日均線)× 波動(近 21 日年化波動 vs 全期滾動中位)。"""
+    log_ret = np.diff(np.log(closes))
+    ma_win = min(200, len(closes))
+    ma200 = float(closes[-ma_win:].mean())
+    vol21 = float(log_ret[-21:].std(ddof=0) * math.sqrt(TRADING_DAYS))
+    roll = _rolling_vol(log_ret, 21)
+    vol_med = float(np.nanmedian(roll))
+    return {
+        "trend": "bull" if closes[-1] > ma200 else "bear",
+        "vol": "high" if vol21 > vol_med else "low",
+        "ma200": ma200, "vol21": vol21, "vol_median": vol_med,
+    }
+
+
+def _rolling_vol(log_ret: np.ndarray, w: int) -> np.ndarray:
+    """滾動 w 日年化波動(索引 t = 截至 log_ret[t] 的窗口);前 w-1 為 NaN。"""
+    n = len(log_ret)
+    out = np.full(n, np.nan)
+    if n < w:
+        return out
+    c1 = np.concatenate([[0.0], np.cumsum(log_ret)])
+    c2 = np.concatenate([[0.0], np.cumsum(log_ret ** 2)])
+    s1 = c1[w:] - c1[:-w]
+    s2 = c2[w:] - c2[:-w]
+    var = np.maximum(s2 / w - (s1 / w) ** 2, 0.0)
+    out[w - 1:] = np.sqrt(var) * math.sqrt(TRADING_DAYS)
+    return out
+
+
+def _state_series(closes: np.ndarray):
+    """逐日狀態序列(log_ret 座標 t = 截至 closes[t+1] 收盤,無前視):
+    回傳 (bull bool 陣列, 滾動 21 日年化波動陣列)。"""
+    log_ret = np.diff(np.log(closes))
+    n = len(log_ret)
+    cs = np.concatenate([[0.0], np.cumsum(closes)])
+    t_arr = np.arange(n)
+    px_idx = t_arr + 1
+    win = np.minimum(px_idx + 1, 200)
+    ma = (cs[px_idx + 1] - cs[px_idx + 1 - win]) / win
+    bull = closes[px_idx] > ma
+    vol = _rolling_vol(log_ret, 21)
+    return bull, vol
+
+
+def _pool_core(closes: np.ndarray, want_bull: bool, want_high: bool, vol_med: float):
+    """指定狀態的歷史起點索引;不足 200 日逐步放寬(先棄趨勢,再棄全部)。"""
+    bull, vol = _state_series(closes)
+    valid = ~np.isnan(vol)
+    t_arr = np.arange(len(bull))
+    high = vol > vol_med
+    pool = t_arr[valid & (bull == want_bull) & (high == want_high)]
+    if len(pool) >= 200:
+        return pool, ""
+    pool = t_arr[valid & (high == want_high)]
+    if len(pool) >= 200:
+        return pool, "趨勢條件樣本不足,僅以波動狀態條件化"
+    return None, "條件樣本不足,改用全部歷史(無條件)"
+
+
+def regime_pool(closes: np.ndarray, state: dict):
+    """當前狀態的歷史樣本池。回傳 (pool | None, sample_days, note)。"""
+    pool, note = _pool_core(closes, state["trend"] == "bull",
+                            state["vol"] == "high", state["vol_median"])
+    return pool, (int(len(pool)) if pool is not None else 0), note
+
+
+# ---------------------------------------------------------------- 估計不確定性(二階 bootstrap)
+
+def uncertainty_bands(log_ret: np.ndarray, spot: float, p: dict, edges: np.ndarray,
+                      fat_tails: bool, B: int = 12, n_paths: int = 800) -> dict:
+    """二階 bootstrap:以大區塊(63 日)重抽「替代歷史」B 次,每個替代歷史重跑模擬,
+    得到各(進場 × 出場)帳戶年化與持有基準年化的「相對中位數的 16/84 偏移量」。
+    偏移量套在點估計上即為 68% 區間 — 反映 drift / 波動估計本身的抽樣不確定性,
+    這是任何依賴十年歷史的點估計天生的模糊度。"""
+    n = len(log_ret)
+    T = p["wait"] + p["max_hold"]
+    rng = np.random.default_rng(99)
+    blk = min(63, n)
+    n_blk = math.ceil(n / blk)
+    acc = {k: [[] for _ in DIP_LEVELS] for k in EXIT_KEYS}
+    bench_acc = []
+    for b in range(B):
+        starts = rng.integers(0, n - blk + 1, size=n_blk)
+        alt = np.concatenate([log_ret[s: s + blk] for s in starts])[:n]
+        prices = simulate_paths(alt, spot, n_paths, T, seed=1000 + b, fat_tails=fat_tails)
+        for i, dip in enumerate(DIP_LEVELS):
+            e = evaluate_entry(prices, spot, dip, p, edges)
+            for k in EXIT_KEYS:
+                acc[k][i].append(e["variants"][k]["account_ann"])
+        bench_acc.append(benchmark_stats(prices, spot, p)["ann"])
+
+    def offsets(vals):
+        lo, med, hi = np.percentile(vals, [16, 50, 84])
+        return [float(lo - med), float(hi - med)]
+
+    return {
+        "entries": {k: [offsets(acc[k][i]) for i in range(len(DIP_LEVELS))] for k in EXIT_KEYS},
+        "bench": offsets(bench_acc),
+        "B": B,
+    }
+
+
+# ---------------------------------------------------------------- 資料健檢
+
+def data_health(dates: list, closes: np.ndarray) -> list:
+    """輕量資料品質檢查,回傳警告字串清單。"""
+    import datetime as _dt
+    warns = []
+    last = _dt.date.fromisoformat(dates[-1])
+    if (_dt.date.today() - last).days > 7:
+        warns.append(f"資料最後日期為 {dates[-1]},距今超過 7 天,可能未更新或已下市。")
+    log_ret = np.diff(np.log(closes))
+    big = np.where(np.abs(log_ret) > 0.40)[0]
+    if len(big):
+        days = ", ".join(dates[i + 1] for i in big[:3])
+        warns.append(f"偵測到 {len(big)} 個單日 |漲跌| > 40% 的極端跳動({days}…),"
+                     "可能為分割/資料異常,結果請謹慎解讀。")
+    d = [_dt.date.fromisoformat(x) for x in dates]
+    gaps = sum(1 for a, b in zip(d[:-1], d[1:]) if (b - a).days > 12)
+    if gaps:
+        warns.append(f"歷史資料存在 {gaps} 段超過 12 個日曆天的缺口(停牌或資料缺漏)。")
+    return warns
 
 
 # ---------------------------------------------------------------- 出場規則(核心,模擬與回測共用)
@@ -273,7 +428,8 @@ def benchmark_stats(prices: np.ndarray, spot: float, p: dict) -> dict:
 
 # ---------------------------------------------------------------- 歷史回測(全期與 walk-forward 共用)
 
-def backtest_full(closes: np.ndarray, p: dict, edges: np.ndarray) -> dict:
+def backtest_full(closes: np.ndarray, p: dict, edges: np.ndarray,
+                  step: int = BACKTEST_STEP) -> dict:
     """同規則在真實序列上逐段實測;只統計窗口完整的起點,避免存活偏差。"""
     M = len(closes)
     wait, max_hold = p["wait"], p["max_hold"]
@@ -284,7 +440,7 @@ def backtest_full(closes: np.ndarray, p: dict, edges: np.ndarray) -> dict:
 
     rows = []
     for dip in DIP_LEVELS:
-        starts = list(range(0, last_start + 1, BACKTEST_STEP))
+        starts = list(range(0, last_start + 1, step))
         te_list, rel_rows = [], []
         for t in starts:
             entry_price = closes[t] * (1.0 - dip)
@@ -333,7 +489,11 @@ def _mad(sim_entries: list, real_rows: list) -> dict:
 
 def walk_forward(closes: np.ndarray, dates: list, p: dict,
                  n_paths: int, edges: np.ndarray) -> dict:
-    """樣本外驗證:前半資料建立模擬 → 後半資料實測。"""
+    """樣本外驗證:只用前半資料建立模擬 → 後半資料逐段實測。
+
+    條件化模式下的正確做法:預先計算四種市場狀態(牛/熊 × 高/低波動)各自的
+    條件預測表,test 段每個起點依「該起點當下的狀態」(無前視)查表,
+    再以狀態出現頻率加權 — 驗證的是「實際使用時」工具給出的預測。"""
     M = len(closes)
     split = M // 2
     window = p["wait"] + p["max_hold"]
@@ -341,13 +501,73 @@ def walk_forward(closes: np.ndarray, dates: list, p: dict,
         return {"available": False,
                 "reason": "資料長度不足(訓練段需 ≥2 年、驗證段需容納完整窗口),略過樣本外驗證。"}
 
-    train_ret = np.diff(np.log(closes[:split]))
-    sim = simulate_paths(train_ret, 1.0, n_paths, window, seed=7)
-    sim_entries = [evaluate_entry(sim, 1.0, dip, p, edges) for dip in DIP_LEVELS]
+    train = closes[:split]
+    train_ret = np.diff(np.log(train))
+    fat = p.get("fat_tails", False)
     bt = backtest_full(closes[split:], p, edges)
     if not bt["available"]:
         return {"available": False, "reason": "驗證段長度不足。"}
 
+    conditional = bool(p.get("conditional"))
+    if conditional:
+        vol_med = regime_state(train)["vol_median"]
+        sim_n = int(np.clip(n_paths // 2, 1000, 2500))
+        preds = {}
+        for tb in (True, False):
+            for hv in (True, False):
+                pool, _ = _pool_core(train, tb, hv, vol_med)
+                sim = simulate_paths(train_ret, 1.0, sim_n, window, seed=7,
+                                     start_pool=pool, fat_tails=fat)
+                preds[(tb, hv)] = [evaluate_entry(sim, 1.0, dip, p, edges)
+                                   for dip in DIP_LEVELS]
+        # test 段每個回測起點的狀態(截至起點收盤,無前視)
+        bull_all, vol_all = _state_series(closes)
+        last_start = (M - split) - 1 - window
+        from collections import Counter
+        cnt = Counter()
+        for t_local in range(0, last_start + 1, BACKTEST_STEP):
+            li = max(split + t_local - 1, 21)
+            cnt[(bool(bull_all[li]), bool(vol_all[li] > vol_med))] += 1
+
+        def wavg(getter):
+            num = den = 0.0
+            for key, c in cnt.items():
+                v = getter(preds[key])
+                if v is None:
+                    continue
+                num += v * c
+                den += c
+            return num / den if den else None
+
+        rows, mad = [], {k: [] for k in EXIT_KEYS}
+        for di, dip in enumerate(DIP_LEVELS):
+            r = bt["rows"][di]
+            row = {"dip": dip, "samples": r["samples"],
+                   "trigger_sim": wavg(lambda pr: pr[di]["trigger_prob"]),
+                   "trigger_real": r["trigger_rate"], "variants": {}}
+            for k in EXIT_KEYS:
+                overall_sim = wavg(lambda pr: pr[di]["trigger_prob"]
+                                   * pr[di]["variants"][k]["hit_prob_entry"])
+                row["variants"][k] = {
+                    "hit_sim": wavg(lambda pr: pr[di]["variants"][k]["hit_prob_entry"]),
+                    "hit_real": r["variants"][k]["hit_rate"],
+                    "overall_sim": overall_sim,
+                    "overall_real": r["variants"][k]["hit_overall"],
+                    "days_sim": wavg(lambda pr: pr[di]["variants"][k]["days_p50"]),
+                    "days_real": r["variants"][k]["days_p50"],
+                }
+                if overall_sim is not None:
+                    mad[k].append(abs(overall_sim - r["variants"][k]["hit_overall"]))
+        return {"available": True, "split_date": dates[split],
+                "train_from": dates[0], "test_to": dates[-1], "conditional": True,
+                "state_mix": {f"{'bull' if tb else 'bear'}/{'high' if hv else 'low'}": c
+                              for (tb, hv), c in cnt.items()},
+                "rows": rows,
+                "mad": {k: (float(np.mean(v)) if v else None) for k, v in mad.items()}}
+
+    # 無條件版
+    sim = simulate_paths(train_ret, 1.0, n_paths, window, seed=7, fat_tails=fat)
+    sim_entries = [evaluate_entry(sim, 1.0, dip, p, edges) for dip in DIP_LEVELS]
     rows = []
     for e, r in zip(sim_entries, bt["rows"]):
         rows.append({
@@ -364,7 +584,7 @@ def walk_forward(closes: np.ndarray, dates: list, p: dict,
             } for k in EXIT_KEYS},
         })
     return {"available": True, "split_date": dates[split],
-            "train_from": dates[0], "test_to": dates[-1],
+            "train_from": dates[0], "test_to": dates[-1], "conditional": False,
             "rows": rows, "mad": _mad(sim_entries, bt["rows"])}
 
 
@@ -382,7 +602,8 @@ def stress_test(closes: np.ndarray, dates: list, spot: float, p: dict,
     sub = log_ret[i0: i0 + TRADING_DAYS]
 
     window = p["wait"] + p["max_hold"]
-    sim = simulate_paths(sub, 1.0, n_paths, window, seed=11)
+    sim = simulate_paths(sub, 1.0, n_paths, window, seed=11,
+                         fat_tails=p.get("fat_tails", False))
     rows = []
     for dip in DIP_LEVELS:
         e = evaluate_entry(sim, 1.0, dip, p, edges)
@@ -402,7 +623,9 @@ def stress_test(closes: np.ndarray, dates: list, spot: float, p: dict,
 
 def analyze(ticker: str, target: float, max_hold: int = 252, wait: int = 63,
             n_paths: int = 5000, years: int = 10, stop: float = 0.15,
-            trail: float = 0.08, cash_rate: float = 0.04) -> dict:
+            trail: float = 0.08, cash_rate: float = 0.04,
+            conditional: bool = True, fat_tails: bool = True,
+            div_tax: float = 0.30) -> dict:
     if not (0.005 <= target <= 5.0):
         raise EngineError("目標利潤需介於 0.5% 與 500% 之間。")
     if not (10 <= max_hold <= 1260):
@@ -414,26 +637,69 @@ def analyze(ticker: str, target: float, max_hold: int = 252, wait: int = 63,
         "stop": float(np.clip(stop, 0.02, 0.50)),
         "trail": float(np.clip(trail, 0.02, 0.50)),
         "cash_rate": float(np.clip(cash_rate, 0.0, 0.10)),
+        "conditional": bool(conditional),
+        "fat_tails": bool(fat_tails),
+        "div_tax": float(np.clip(div_tax, 0.0, 0.50)),
     }
     n_paths = int(np.clip(n_paths, 500, 20000))
 
     closes, dates, meta = fetch_history(ticker, years)
     spot = float(closes[-1])
     stats = basic_stats(closes)
-    log_ret = np.diff(np.log(closes))
+    warnings = data_health(dates, closes)
     edges = np.linspace(0, p["max_hold"], HIST_BINS + 1)
 
-    horizon = p["wait"] + p["max_hold"]
-    prices = simulate_paths(log_ret, spot, n_paths, horizon)
+    # 股息預扣稅:前瞻模擬的報酬扣除 yield × 稅率(調整後價格已含全額股息再投資)
+    log_ret = np.diff(np.log(closes))
+    div_drag = 0.0
+    if p["div_tax"] > 0 and meta.get("div_yield", 0) > 0:
+        div_drag = math.log1p(-meta["div_yield"] * p["div_tax"]) / TRADING_DAYS
+        log_ret = log_ret + div_drag
 
+    # 市場狀態與條件化模擬
+    state = regime_state(closes)
+    pool, pool_days, pool_note = (None, 0, "")
+    if p["conditional"]:
+        pool, pool_days, pool_note = regime_pool(closes, state)
+    regime = {"enabled": p["conditional"], "trend": state["trend"], "vol": state["vol"],
+              "sample_days": pool_days, "note": pool_note,
+              "active": bool(p["conditional"] and pool is not None)}
+
+    horizon = p["wait"] + p["max_hold"]
+    prices = simulate_paths(log_ret, spot, n_paths, horizon,
+                            start_pool=pool, fat_tails=p["fat_tails"])
     entries = [evaluate_entry(prices, spot, dip, p, edges) for dip in DIP_LEVELS]
     bench = benchmark_stats(prices, spot, p)
 
+    # in-sample 驗證需與「全期、無條件」的模擬對照才語義對等
+    if regime["active"]:
+        prices_u = simulate_paths(log_ret, spot, min(n_paths, 3000), horizon,
+                                  fat_tails=p["fat_tails"])
+        entries_u = [evaluate_entry(prices_u, spot, dip, p, edges) for dip in DIP_LEVELS]
+    else:
+        entries_u = entries
+
     bt = backtest_full(closes, p, edges)
     if bt["available"]:
-        bt["mad"] = _mad(entries, bt["rows"])
+        bt["mad"] = _mad(entries_u, bt["rows"])
+        for e_u, row in zip(entries_u, bt["rows"]):     # 對照表的「模擬」欄(無條件)
+            row["sim"] = {"trigger_prob": e_u["trigger_prob"],
+                          "variants": {k: {"hit": e_u["variants"][k]["hit_prob_entry"],
+                                           "days_p50": e_u["variants"][k]["days_p50"]}
+                                       for k in EXIT_KEYS}}
     wf = walk_forward(closes, dates, p, n_paths, edges)
     stress = stress_test(closes, dates, spot, p, n_paths, edges)
+
+    # 估計不確定性(68% 區間)— 偏移量套在點估計上,中心對齊、寬度誠實
+    bands = uncertainty_bands(log_ret, spot, p, edges, p["fat_tails"])
+    for i in range(len(entries)):
+        for k in EXIT_KEYS:
+            lo_off, hi_off = bands["entries"][k][i]
+            v = entries[i]["variants"][k]
+            v["ann_lo"] = v["account_ann"] + lo_off
+            v["ann_hi"] = v["account_ann"] + hi_off
+    bench["ann_lo"] = bench["ann"] + bands["bench"][0]
+    bench["ann_hi"] = bench["ann"] + bands["bench"][1]
 
     # 各出場規則的推薦進場點位 = 帳戶年化最高者;全域最佳組合另計
     reco = {k: int(max(range(len(entries)),
@@ -448,6 +714,9 @@ def analyze(ticker: str, target: float, max_hold: int = 252, wait: int = 63,
         **meta,
         "current_price": spot,
         "stats": stats,
+        "warnings": warnings,
+        "regime": regime,
+        "div_drag_ann": (math.exp(div_drag * TRADING_DAYS) - 1) if div_drag else 0.0,
         "params": {**p, "n_paths": n_paths, "years_used": stats["years"]},
         "history": {"dates": dates[-tail:], "prices": closes[-tail:].tolist()},
         "fan": _fan_chart(prices),
@@ -461,6 +730,143 @@ def analyze(ticker: str, target: float, max_hold: int = 252, wait: int = 63,
         "walk_forward": wf,
         "stress": stress,
     }
+
+
+# ---------------------------------------------------------------- 市場探索(粗掃)
+
+def quick_one(closes: np.ndarray, ticker: str, name: str, p: dict,
+              n_paths: int = 2000) -> dict:
+    """單檔輕量分析:主模擬 + 全組合評比 + in-sample 偏差,供市場掃描排序分類。
+    不含 walk-forward / 壓力測試(由前端對入圍標的呼叫完整分析補上)。"""
+    spot = float(closes[-1])
+    log_ret = np.diff(np.log(closes))
+    edges = np.linspace(0, p["max_hold"], HIST_BINS + 1)
+    T = p["wait"] + p["max_hold"]
+    pool = None
+    if p.get("conditional"):
+        pool, _, _ = regime_pool(closes, regime_state(closes))
+    prices = simulate_paths(log_ret, spot, n_paths, T, start_pool=pool,
+                            fat_tails=p.get("fat_tails", False))
+
+    entries = [evaluate_entry(prices, spot, dip, p, edges) for dip in DIP_LEVELS]
+    bench = benchmark_stats(prices, spot, p)
+
+    # 單純持有的 ¼ Kelly(供「適合持有」標的的倉位建議)
+    r_bh = prices[:, T] / spot - 1.0
+    cash_t = (1.0 + p["cash_rate"]) ** (T / TRADING_DAYS) - 1.0
+    var = float(r_bh.var())
+    kelly_bh = max(0.0, min(1.0, (float(r_bh.mean()) - cash_t) / var / 4.0)) if var > 1e-12 else 0.0
+
+    best_k, best_i = max(((k, i) for k in EXIT_KEYS for i in range(len(entries))),
+                         key=lambda ki: entries[ki[1]]["variants"][ki[0]]["account_ann"])
+    e, v = entries[best_i], entries[best_i]["variants"][best_k]
+    excess = v["account_ann"] - bench["ann"]
+
+    bt = backtest_full(closes, p, edges, step=10)
+    bt_mad = _mad(entries, bt["rows"])[best_k] if bt["available"] else None
+
+    # 擇時優勢必須同時:贏過持有 0.5pp 以上、且帳戶年化至少比現金高 2pp —
+    # 否則「贏過很爛的持有」只是五十步笑百步,對投資人正確的建議是留現金。
+    cash_floor = p["cash_rate"] + 0.02
+    if excess > 0.005 and v["account_ann"] >= cash_floor:
+        category = "timing"
+    elif bench["ann"] >= 0.08:         # 擇時無優勢但長期報酬夠好 → 持有
+        category = "hold"
+    else:
+        category = "avoid"
+
+    stats = basic_stats(closes)
+    return {
+        "ticker": ticker, "name": name,
+        "current_price": spot,
+        "ann_return": stats["ann_return"], "ann_vol": stats["ann_vol"],
+        "years": stats["years"],
+        "benchmark": {"ann": bench["ann"], "total_p10": bench["total_p10"],
+                      "kelly_bh": kelly_bh},
+        "best": {"variant": best_k, "idx": best_i, "dip": e["dip"],
+                 "entry_price": e["entry_price"], "target_price": e["target_price"],
+                 "stop_price": e["stop_price"], "trigger_prob": e["trigger_prob"],
+                 "account_ann": v["account_ann"], "excess": excess,
+                 "hit_prob_overall": v["hit_prob_overall"], "days_p50": v["days_p50"],
+                 "kelly": v["kelly"], "ret_p10": v["ret_p10"]},
+        "bt_mad": bt_mad,
+        "category": category,
+    }
+
+
+def discover_scan(tickers: dict, p: dict, n_paths: int = 2000, years: int = 10,
+                  progress=None) -> dict:
+    """掃描整個股票池:分批批量下載 → 逐檔 quick_one。progress(phase, done, total, label)。"""
+    items = list(tickers.items())
+    total = len(items)
+    closes_map, errors = {}, []
+
+    CHUNK = 30
+    for ci in range(0, total, CHUNK):
+        chunk = [t for t, _ in items[ci: ci + CHUNK]]
+        if progress:
+            progress("download", ci, total, f"{chunk[0]} … {chunk[-1]}")
+        try:
+            df = yf.download(chunk, period=f"{years}y", interval="1d", auto_adjust=True,
+                             progress=False, group_by="ticker", threads=True)
+        except Exception as exc:
+            errors.extend({"ticker": t, "reason": f"下載失敗:{exc}"} for t in chunk)
+            continue
+        for t in chunk:
+            try:
+                col = df[t]["Close"] if isinstance(df.columns, pd.MultiIndex) else df["Close"]
+                c = col.dropna()
+                c = c[c > 0]
+                if len(c) >= TRADING_DAYS:
+                    closes_map[t] = c            # 保留 Series(日期索引,供聚類與輪動回測)
+                else:
+                    errors.append({"ticker": t, "reason": "資料不足一年"})
+            except Exception:
+                errors.append({"ticker": t, "reason": "無資料"})
+
+    results = []
+    for i, (t, nm) in enumerate(items):
+        if t not in closes_map:
+            continue
+        if progress:
+            progress("analyze", i, total, t)
+        try:
+            results.append(quick_one(closes_map[t].to_numpy(dtype=float), t, nm, p, n_paths))
+        except Exception as exc:
+            errors.append({"ticker": t, "reason": f"分析失敗:{exc}"})
+
+    clusters = correlation_clusters(closes_map, [r["ticker"] for r in results])
+    return {"results": results, "errors": errors, "clusters": clusters,
+            "series": closes_map}
+
+
+def correlation_clusters(series_map: dict, tickers: list, thr: float = 0.8) -> list:
+    """近一年日報酬相關 > thr 的連通群(≥2 檔)— 這些標的漲跌高度同步,應視為同一注。
+    閾值 0.8:0.7 會讓大型股透過大盤 ETF 連通成單一巨群,失去產業辨識度。"""
+    cols = {t: np.log(series_map[t]).diff() for t in tickers if t in series_map}
+    if len(cols) < 2:
+        return []
+    df = pd.DataFrame(cols).tail(TRADING_DAYS)
+    df = df.dropna(axis=1, thresh=int(TRADING_DAYS * 0.8))
+    names = list(df.columns)
+    if len(names) < 2:
+        return []
+    corr = df.corr().to_numpy()
+
+    parent = list(range(len(names)))
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            if corr[i, j] > thr:
+                parent[find(i)] = find(j)
+    groups: dict = {}
+    for i, t in enumerate(names):
+        groups.setdefault(find(i), []).append(t)
+    return sorted([g for g in groups.values() if len(g) >= 2], key=len, reverse=True)
 
 
 def _fan_chart(prices: np.ndarray) -> dict:

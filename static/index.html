@@ -127,6 +127,42 @@ tbody tr.bench-row td{border-bottom:1px dashed var(--border);font-style:normal}
 .vtext{font-size:.85rem;color:var(--muted);margin-bottom:12px}
 .vtext b{color:var(--text)}
 
+.discover-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+  margin-top:15px;padding-top:15px;border-top:1px solid var(--border)}
+.discover-bar .txt{font-size:.85rem;color:var(--muted);flex:1;min-width:260px}
+.discover-bar .txt b{color:var(--text)}
+#dbtn,#tkbtn,.btn2{background:transparent;color:var(--blue);border:1px solid var(--blue);border-radius:9px;
+  padding:10px 22px;font-size:.92rem;font-weight:700;font-family:var(--sans);cursor:pointer;
+  white-space:nowrap;transition:background-color .2s}
+#dbtn:hover,#tkbtn:hover,.btn2:hover{background:rgba(91,155,255,.12)}
+#dbtn:disabled,.btn2:disabled{opacity:.5;cursor:not-allowed}
+#tkbtn{color:var(--amber);border-color:var(--amber)}
+#tkbtn:hover{background:rgba(251,191,36,.1)}
+.btn-track{background:transparent;color:var(--amber);border:1px solid rgba(251,191,36,.5);
+  border-radius:6px;padding:2px 10px;font-size:.74rem;font-weight:700;font-family:var(--sans);
+  cursor:pointer;white-space:nowrap}
+.btn-track:hover{background:rgba(251,191,36,.12)}
+.btn-track:disabled{opacity:.6;cursor:default}
+.flag{display:inline-flex;align-items:center;gap:6px;font-size:.76rem;border-radius:7px;
+  padding:3px 10px;border:1px solid var(--border);color:var(--muted);background:var(--surface)}
+.flag b{color:var(--text);font-weight:500}
+#r-flags{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+.range{font-size:.74rem;color:var(--muted)}
+#discover{display:none}
+.progress{position:relative;height:28px;background:var(--bg);border:1px solid var(--border);
+  border-radius:8px;overflow:hidden;margin-bottom:12px}
+.progress .fill{height:100%;width:0%;background:linear-gradient(90deg,#2C5EBB,#5B9BFF);transition:width .5s}
+.progress .ptext{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-size:.78rem;font-family:var(--mono);color:var(--text)}
+.dh4{font-size:.86rem;font-weight:700;margin:18px 0 8px}
+.dh4 .sub{font-weight:400;color:var(--muted);font-size:.78rem;margin-left:8px}
+#d-avoid{margin-top:16px}
+#d-avoid summary{color:var(--muted);font-size:.84rem;cursor:pointer;user-select:none}
+#d-avoid .lst{margin-top:8px;font-size:.82rem;color:var(--muted);line-height:2}
+#d-avoid .lst span{font-family:var(--mono);color:var(--text);margin-right:4px}
+.vbadge.bad{color:var(--red);background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.35)}
+.vbadge.sm{font-size:.72rem;padding:2px 8px}
+
 footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);
   color:var(--muted);font-size:.78rem;line-height:1.7}
 
@@ -200,12 +236,78 @@ footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);
           <select id="paths"><option value="2000">2,000(快)</option><option value="5000" selected>5,000(建議)</option><option value="10000">10,000(精細)</option></select></div>
         <div class="field"><label for="years">歷史年限</label>
           <select id="years"><option value="5">5 年</option><option value="10" selected>10 年</option><option value="15">15 年</option></select></div>
+        <div class="field"><label for="cond">條件化模擬(市場狀態)</label>
+          <select id="cond"><option value="1" selected>開(依當前趨勢×波動)</option><option value="0">關(無條件)</option></select></div>
+        <div class="field"><label for="fat">厚尾增強(t 噪音)</label>
+          <select id="fat"><option value="1" selected>開(建議)</option><option value="0">關</option></select></div>
+        <div class="field"><label for="divtax">股息預扣稅(%)</label>
+          <input id="divtax" type="number" value="30" min="0" max="50" step="5"></div>
       </div>
     </details>
   </form>
+  <div class="discover-bar">
+    <div class="txt"><b>不知道買什麼?</b> 讓工具掃描內建約 110 檔美股大型股與 ETF,
+      用你上方設定的目標與出場參數,自動找出「擇時有優勢」與「適合買入持有」的標的,
+      並對入圍者跑完整樣本外驗證與熊市壓力測試、給出信心分級。</div>
+    <div style="display:flex;gap:10px">
+      <button type="button" id="tkbtn">追蹤紀錄</button>
+      <button type="button" id="dbtn">探索市場</button>
+    </div>
+  </div>
 </section>
 
 <div id="error" role="alert"></div>
+
+<!-- 市場探索 -->
+<section class="card sec" id="discover">
+  <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>市場探索<span id="d-status" style="font-weight:400;color:var(--muted);font-size:.8rem"></span></h2>
+  <div class="progress" id="d-progress"><div class="fill"></div><div class="ptext"></div></div>
+  <div class="vtext" id="d-summary" style="display:none"></div>
+
+  <div id="d-timing-wrap" style="display:none">
+    <div class="dh4">一、擇時有優勢 — 策略帳戶年化勝過單純持有<span class="sub">依超額報酬排序;入圍者自動精審(walk-forward + 壓力測試)</span></div>
+    <div class="tbl-wrap">
+      <table style="min-width:1020px">
+        <thead><tr>
+          <th>代碼</th><th>名稱</th><th>怎麼進場</th><th>怎麼出場</th><th>倉位上限</th>
+          <th>預計持有</th><th>帳戶年化</th><th>超額</th><th>熊市壓力</th><th>信心</th><th></th>
+        </tr></thead>
+        <tbody id="d-timing"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="d-hold-wrap" style="display:none">
+    <div class="dh4">二、適合買入持有 — 擇時無優勢,但長期報酬佳<span class="sub">依模擬持有年化排序;進出場規則只會損耗這些標的</span></div>
+    <div class="tbl-wrap">
+      <table style="min-width:760px">
+        <thead><tr>
+          <th>代碼</th><th>名稱</th><th>現價</th><th>持有年化(模擬)</th>
+          <th>窗口最差 10%</th><th>倉位上限(¼ Kelly)</th><th></th>
+        </tr></thead>
+        <tbody id="d-hold"></tbody>
+      </table>
+    </div>
+    <div class="tbl-note" id="d-clusters" style="display:none"></div>
+  </div>
+
+  <details id="d-avoid" style="display:none"><summary></summary><div class="lst" id="d-avoid-lst"></div></details>
+
+  <div id="d-rotation" style="display:none">
+    <div class="dh4">四、組合輪動實測 — 出場後資金立即輪動到下一個訊號<span class="sub">用本次掃描全部標的的真實十年歷史;單檔「帳戶年化」的保守假設在此被解除</span></div>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+      <button type="button" class="btn2" id="rotbtn">執行輪動回測</button>
+      <span class="tbl-note" style="margin:0">進場:收盤回落自近 63 日高點;出場與最大同時持倉(5 檔)依面板設定;標的清單由同段歷史選出,結果偏樂觀,參考結構而非絕對值。</span>
+    </div>
+    <div id="rot-out"></div>
+  </div>
+
+  <div class="banner warn" style="margin-top:16px">
+    給新手的提醒:以上為歷史統計的推論,不是保證。單檔投入請勿超過表中倉位上限,
+    所有部位合計不要超過總資金的 100%、單檔建議再低於 25%;先用小部位驗證流程,
+    並嚴格執行表中的出場紀律(停損/停利),才有「跟著數字走」的意義。
+  </div>
+</section>
 
 <div id="skeleton" aria-hidden="true">
   <div class="sk-row"><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div></div>
@@ -228,12 +330,29 @@ footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);
   <div class="tbl-note">每列為該標的在所有「進場 × 出場」組合中帳戶年化最高者。點選任一列可進入單檔詳細分析。超額 = 帳戶年化 − 同窗口單純持有年化;紅色表示該標的更適合持有不動而非擇時。</div>
 </section>
 
+<!-- 追蹤紀錄 -->
+<section class="card sec" id="trackpanel" style="display:none">
+  <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>建議追蹤 — 工具的成績單<span id="tk-summary" style="font-weight:400;color:var(--muted);font-size:.8rem"></span></h2>
+  <div class="vtext">每筆你按下「追蹤」的建議都會被記錄,之後自動以收盤資料對答案(等待觸發 → 持有 → 出場,規則與分析完全一致)。
+    信任應該來自事後可查的成績單,而不是回測。</div>
+  <div class="tbl-wrap">
+    <table style="min-width:980px">
+      <thead><tr>
+        <th>建議日</th><th>代碼</th><th>建議內容</th><th>狀態</th><th>進場價</th>
+        <th>最新/出場價</th><th>實際報酬</th><th>預期年化</th><th>更新至</th><th></th>
+      </tr></thead>
+      <tbody id="tk-tbody"></tbody>
+    </table>
+  </div>
+</section>
+
 <!-- 單檔結果 -->
 <div id="result">
   <div class="ticker-line">
     <span class="tk" id="r-ticker"></span><span class="nm" id="r-name"></span>
     <span class="px" id="r-price"></span><span class="asof" id="r-asof"></span>
   </div>
+  <div id="r-flags"></div>
 
   <div class="stat-grid">
     <div class="stat"><div class="lb">年化報酬(歷史幾何)</div><div class="vl" id="s-ret"></div></div>
@@ -243,7 +362,7 @@ footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);
   </div>
 
   <section class="card" id="reco">
-    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>建議策略<span id="rc-var" style="color:var(--muted);font-weight:400;font-size:.82rem"></span></h2>
+    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>建議策略<span id="rc-var" style="color:var(--muted);font-weight:400;font-size:.82rem"></span><button type="button" class="btn-track" id="rc-track" style="margin-left:auto">＋ 追蹤此建議</button></h2>
     <div class="reco-grid">
       <div class="reco-main">
         <span class="tag" id="rc-tag"></span>
@@ -265,12 +384,13 @@ footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);
       <table style="min-width:760px">
         <thead><tr>
           <th>出場規則</th><th>達標率(進場後)</th><th>平均報酬(進場後)</th><th>出場虧損率</th>
-          <th>中位持有(獲利)</th><th>帳戶年化⁵</th><th>vs 單純持有</th>
+          <th>中位持有(獲利)</th><th>帳戶年化⁵</th><th>68% 區間⁶</th><th>vs 單純持有</th>
         </tr></thead>
         <tbody id="cmp-tbody"></tbody>
       </table>
     </div>
-    <div class="tbl-note">點選任一列可切換全頁面的出場規則檢視。「單純持有」為同一資金窗口、同一模擬路徑下的基準。</div>
+    <div class="tbl-note">點選任一列可切換全頁面的出場規則檢視。「單純持有」為同一資金窗口、同一模擬路徑下的基準。
+      ⁶ 68% 區間:二階 bootstrap 估計 — 十年歷史能告訴你的期望報酬,天生就有這麼寬的模糊度;區間外仍有約 1/3 機率。</div>
   </section>
 
   <section class="card sec">
@@ -404,8 +524,10 @@ function buildQuery(ticker){
     ticker, target:$('target').value, max_hold:$('maxhold').value, wait:$('wait').value,
     paths:$('paths').value, years:$('years').value, stop:$('stop').value,
     trail:$('trail').value, cash:$('cash').value,
+    cond:$('cond').value, fat:$('fat').value, divtax:$('divtax').value,
   });
 }
+const fmtRange = (lo,hi) => (lo==null||hi==null) ? '' : fmtSPct(lo)+' ~ '+fmtSPct(hi);
 
 /* ---------- 提交(單檔或多檔掃描) ---------- */
 $('form').addEventListener('submit', async ev => {
@@ -521,6 +643,27 @@ function render(){
   $('s-vol').textContent = fmtPct(d.stats.ann_vol);
   $('s-dd').textContent = fmtPct(d.stats.max_drawdown);
   $('s-bh').textContent = fmtSPct(d.benchmark.ann);
+
+  // 市場狀態 / 模型旗標 / 資料警告
+  const flags = [];
+  const rg = d.regime || {};
+  if (rg.active) {
+    flags.push('<span class="flag">市場狀態:<b>' + (rg.trend==='bull'?'多頭趨勢':'空頭趨勢') + ' × '
+      + (rg.vol==='high'?'高波動':'低波動') + '</b> · 條件樣本 ' + rg.sample_days
+      + ' 日(前一季條件抽樣' + (rg.note ? ';' + esc(rg.note) : '') + ')</span>');
+  } else if (rg.enabled) {
+    flags.push('<span class="flag">條件化:' + esc(rg.note || '樣本不足,使用無條件模擬') + '</span>');
+  } else {
+    flags.push('<span class="flag">無條件模擬(條件化已關閉)</span>');
+  }
+  if (d.params.fat_tails) flags.push('<span class="flag">厚尾增強:開</span>');
+  if (d.div_drag_ann && d.div_drag_ann < -0.0005)
+    flags.push('<span class="flag">股息稅拖累 <b>' + fmtSPct(d.div_drag_ann, 2) + '/年</b>(殖利率 '
+      + fmtPct(d.div_yield, 2) + ' × ' + (d.params.div_tax*100).toFixed(0) + '%)</span>');
+  (d.warnings || []).forEach(w =>
+    flags.push('<span class="flag" style="color:var(--amber);border-color:rgba(251,191,36,.4)">' + esc(w) + '</span>'));
+  $('r-flags').innerHTML = flags.join('');
+
   renderVariantViews();
   drawHist(); drawFan();
   $('result').style.display = 'block';
@@ -551,10 +694,22 @@ function renderReco(){
   $('rc-ann').textContent = fmtSPct(v.account_ann);
   $('rc-ann').className = 'vl ' + cls(v.account_ann);
   const diff = v.account_ann - d.benchmark.ann;
-  $('rc-ann-hint').textContent = 'vs 單純持有 ' + fmtSPct(d.benchmark.ann) + '(' + fmtPp(diff) + ')';
+  $('rc-ann-hint').innerHTML = '68% 區間 ' + fmtRange(v.ann_lo, v.ann_hi)
+    + '<br>vs 單純持有 ' + fmtSPct(d.benchmark.ann) + '(' + fmtPp(diff) + ')';
   $('rc-days').textContent = v.days_p50 == null ? '—' : fmtDaysLong(v.days_p50);
   $('rc-days-hint').textContent = v.days_p90 == null ? '' : '90% 的獲利出場 ≤ ' + Math.round(v.days_p90) + ' 個交易日';
   $('rc-kelly').textContent = fmtPct(v.kelly, 0);
+
+  // 追蹤此建議
+  const tbtn = $('rc-track');
+  tbtn.disabled = false; tbtn.textContent = '＋ 追蹤此建議';
+  tbtn.onclick = () => addTrack({
+    ticker: d.ticker, name: d.name, kind: 'timing',
+    dip: e.dip, entry_price: e.entry_price, variant: VAR,
+    target: d.params.target, stop: d.params.stop, trail: d.params.trail,
+    wait: d.params.wait, max_hold: d.params.max_hold,
+    spot_at_rec: d.current_price, expected_ann: v.account_ann, expected_days: v.days_p50,
+  }, tbtn);
 
   const bt = (d.backtest.available ? d.backtest.rows[idx] : null);
   const btv = bt ? bt.variants[VAR] : null;
@@ -602,13 +757,15 @@ function renderCompare(){
       <td>${fmtPct(v.loss_prob)}</td>
       <td>${fmtDays(v.days_p50)}</td>
       <td class="${cls(v.account_ann)}">${fmtSPct(v.account_ann)}</td>
+      <td class="range">${fmtRange(v.ann_lo, v.ann_hi)}</td>
       <td class="${cls(diff)}">${fmtPp(diff)}</td>
     </tr>`;
   }).join('') + `<tr class="bench-row">
       <td>單純持有(基準)</td><td>—</td>
       <td>總報酬中位 ${fmtSPct(d.benchmark.total_p50)}</td>
       <td>${fmtPct(d.benchmark.loss_prob)}</td><td>${fmtDays(d.benchmark.window_days)}</td>
-      <td class="${cls(d.benchmark.ann)}">${fmtSPct(d.benchmark.ann)}</td><td>0.0 pp</td>
+      <td class="${cls(d.benchmark.ann)}">${fmtSPct(d.benchmark.ann)}</td>
+      <td class="range">${fmtRange(d.benchmark.ann_lo, d.benchmark.ann_hi)}</td><td>0.0 pp</td>
     </tr>`;
   $('cmp-tbody').innerHTML = rows;
   $('cmp-tbody').querySelectorAll('tr.clickable').forEach(tr =>
@@ -659,13 +816,17 @@ function renderValidation(){
   if (d.backtest.available) {
     badge($('bt-badge'), d.backtest.mad[VAR], 0.10);
     $('bt-text').innerHTML = '同一規則(出場:' + VLABEL[VAR] + ')放回全部 ' + d.stats.years
-      + ' 年歷史、每 5 個交易日一個起點實際執行,僅統計窗口完整樣本。此為 in-sample 驗證 — 只證明模擬器忠實重現過去,不證明預測力(見下方樣本外驗證)。';
+      + ' 年歷史、每 5 個交易日一個起點實際執行,僅統計窗口完整樣本。此為 in-sample 驗證 — 只證明模擬器忠實重現過去,不證明預測力(見下方樣本外驗證)。'
+      + (d.regime && d.regime.active ? '「模擬」欄為無條件分佈,與全期實測語義對等(主頁面的條件化數字不在此比較)。' : '');
     $('bt-tbody').innerHTML = d.entries.map((e, i) => {
       const r = d.backtest.rows[i], rv = r.variants[VAR], v = e.variants[VAR];
+      const sim = r.sim || { trigger_prob: e.trigger_prob,
+        variants: { [VAR]: { hit: v.hit_prob_entry, days_p50: v.days_p50 } } };
+      const sv = sim.variants[VAR];
       return `<tr><td>${dipName(e.dip)}</td><td>${r.samples}</td>
-        <td>${fmtPct(e.trigger_prob)}</td><td>${fmtPct(r.trigger_rate)}</td>
-        <td>${fmtPct(v.hit_prob_entry)}</td><td>${fmtPct(rv.hit_rate)}</td>
-        <td>${fmtDays(v.days_p50)}</td><td>${fmtDays(rv.days_p50)}</td></tr>`;
+        <td>${fmtPct(sim.trigger_prob)}</td><td>${fmtPct(r.trigger_rate)}</td>
+        <td>${fmtPct(sv.hit)}</td><td>${fmtPct(rv.hit_rate)}</td>
+        <td>${fmtDays(sv.days_p50)}</td><td>${fmtDays(rv.days_p50)}</td></tr>`;
     }).join('');
   } else {
     badge($('bt-badge'), null, 0.10);
@@ -676,9 +837,13 @@ function renderValidation(){
   const wf = d.walk_forward;
   if (wf.available) {
     badge($('wf-badge'), wf.mad[VAR], 0.15);
+    const mixTxt = wf.conditional && wf.state_mix
+      ? ' 條件化驗證:後半每個起點依「當時的市場狀態」查表取預測(狀態分佈:'
+        + Object.entries(wf.state_mix).map(([k,v]) => k + ' ' + v).join('、') + '),驗證的是實際使用情境。'
+      : '';
     $('wf-text').innerHTML = '真正的樣本外實測:只用 <b>' + wf.train_from + ' ~ ' + wf.split_date
       + '</b>(前半)的資料建立模擬,再到 <b>' + wf.split_date + ' ~ ' + wf.test_to
-      + '</b>(後半)逐段實際執行。預測與實際的偏差,是這個模型對「沒見過的未來」真實能力的估計 — 通常比 in-sample 大,這是誠實的數字。';
+      + '</b>(後半)逐段實際執行。預測與實際的偏差,是這個模型對「沒見過的未來」真實能力的估計 — 通常比 in-sample 大,這是誠實的數字。' + mixTxt;
     $('wf-wrap').style.display = '';
     $('wf-tbody').innerHTML = wf.rows.map(r => {
       const v = r.variants[VAR];
@@ -779,16 +944,21 @@ function drawHisto(){
 
 function drawBt(){
   const d = DATA;
-  $('cap-bt').textContent = '出場規則:' + VLABEL[VAR] + ' · 觸發機率 × 進場後達標率';
+  $('cap-bt').textContent = '出場規則:' + VLABEL[VAR] + ' · 觸發機率 × 進場後達標率(模擬為無條件分佈,與全期實測對等)';
   const labels = d.entries.map(e => dipName(e.dip));
   const real = d.backtest.available
     ? d.entries.map((e,i) => { const rv = d.backtest.rows[i].variants[VAR];
         return rv.hit_overall != null ? +(rv.hit_overall*100).toFixed(1) : null; })
     : d.entries.map(() => null);
+  const simOverall = d.entries.map((e,i) => {
+    const r = d.backtest.available ? d.backtest.rows[i] : null;
+    if (r && r.sim) return +((r.sim.trigger_prob * (r.sim.variants[VAR].hit || 0)) * 100).toFixed(1);
+    return +(e.variants[VAR].hit_prob_overall*100).toFixed(1);
+  });
   mk('ch-bt', {
     type:'bar',
     data:{ labels, datasets:[
-      { label:'蒙地卡羅模擬', data:d.entries.map(e => +(e.variants[VAR].hit_prob_overall*100).toFixed(1)),
+      { label:'蒙地卡羅模擬', data:simOverall,
         backgroundColor:'rgba(91,155,255,.6)', borderColor:C.blue, borderWidth:1, borderRadius:3 },
       { label:'歷史實測', data:real,
         backgroundColor:'rgba(251,191,36,.55)', borderColor:C.amber, borderWidth:1, borderRadius:3 },
@@ -800,14 +970,378 @@ function drawBt(){
   });
 }
 
+/* ---------- 建議追蹤(track record) ---------- */
+const STATUS_TXT = { waiting:'等待觸發', active:'持有中', done:'已出場', expired:'未觸發逾期' };
+
+$('tkbtn').addEventListener('click', () => {
+  const pn = $('trackpanel');
+  if (pn.style.display === 'none') { pn.style.display = 'block'; loadTrack(); }
+  else pn.style.display = 'none';
+});
+
+async function addTrack(payload, btn){
+  if (btn) { btn.disabled = true; btn.textContent = '記錄中…'; }
+  try {
+    const rsp = await fetch('/api/track/add', { method:'POST',
+      headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(payload) });
+    const j = await rsp.json();
+    if (!rsp.ok) throw new Error(j.error || '失敗');
+    if (btn) btn.textContent = '已加入 ✓';
+    if ($('trackpanel').style.display !== 'none') loadTrack();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '追蹤失敗,重試'; }
+  }
+}
+
+function trackDesc(r){
+  if (r.kind === 'hold') return '買入持有(建議日 ' + fmtPx(r.entry_price,'USD') + ')';
+  const entry = r.dip > 0 ? '掛 ' + fmtPx(r.entry_price,'USD') + '(-' + (r.dip*100).toFixed(0) + '%)' : '現價買入';
+  const ex = { fixed:'+'+(r.target*100).toFixed(0)+'% 賣', fixed_stop:'+'+(r.target*100).toFixed(0)+'% 賣/-'+(r.stop*100).toFixed(0)+'% 停損',
+    trail:'+'+(r.target*100).toFixed(0)+'% 後 '+(r.trail*100).toFixed(0)+'% 移停',
+    trail_stop:'+'+(r.target*100).toFixed(0)+'% 後 '+(r.trail*100).toFixed(0)+'% 移停/-'+(r.stop*100).toFixed(0)+'% 停損' }[r.variant] || r.variant;
+  return entry + ' · ' + ex;
+}
+
+async function loadTrack(){
+  $('tk-tbody').innerHTML = '<tr><td colspan="10" style="text-align:left;color:var(--muted)">更新中(對最新收盤資料)…</td></tr>';
+  let d;
+  try { d = await (await fetch('/api/track/list')).json(); }
+  catch { $('tk-tbody').innerHTML = '<tr><td colspan="10" style="text-align:left;color:var(--red)">載入失敗</td></tr>'; return; }
+  const s = d.summary || {};
+  $('tk-summary').textContent = ' — 共 ' + s.total + ' 筆,進行中 ' + s.open + ',已結案 ' + s.closed
+    + (s.closed ? ',結案勝率 ' + fmtPct(s.win_rate,0) + ',平均報酬 ' + fmtSPct(s.avg_return) : '');
+  if (!d.rows.length) {
+    $('tk-tbody').innerHTML = '<tr><td colspan="10" style="text-align:left;color:var(--muted)">尚無追蹤紀錄 — 在單檔分析的建議卡或探索結果按「追蹤」即可開始累積成績單。</td></tr>';
+    return;
+  }
+  $('tk-tbody').innerHTML = d.rows.map(r => {
+    const px = r.status === 'done' ? r.exit_price : r.last_price;
+    const st = STATUS_TXT[r.status] + (r.exit_reason ? '(' + r.exit_reason + ')' : '');
+    return `<tr>
+      <td>${esc(r.created_at)}</td>
+      <td style="font-family:var(--mono);color:var(--blue);font-weight:700">${esc(r.ticker)}</td>
+      <td style="font-family:var(--sans)">${esc(trackDesc(r))}</td>
+      <td style="font-family:var(--sans)">${st}</td>
+      <td>${fmtPx(r.entry_price,'USD')}</td>
+      <td>${px==null?'—':fmtPx(px,'USD')}</td>
+      <td class="${cls(r.current_return)}">${fmtSPct(r.current_return)}</td>
+      <td>${r.expected_ann==null?'—':fmtSPct(r.expected_ann)}</td>
+      <td style="font-size:.76rem;color:var(--muted)">${esc(r.last_date||'—')}</td>
+      <td><button class="btn-track" data-rm="${r.id}">移除</button></td>
+    </tr>`;
+  }).join('');
+  $('tk-tbody').querySelectorAll('[data-rm]').forEach(b => b.addEventListener('click', async () => {
+    await fetch('/api/track/remove?id=' + b.dataset.rm, { method:'POST' });
+    loadTrack();
+  }));
+}
+
+/* ---------- 市場探索 ---------- */
+const REFINE_MAX = 12;   // 自動精審(完整驗證)的入圍上限
+const TRACK_PAYLOADS = {};   // ticker -> 追蹤 payload(精審後更新)
+
+$('dbtn').addEventListener('click', startDiscover);
+
+async function startDiscover(){
+  const q = new URLSearchParams({
+    target:$('target').value, max_hold:$('maxhold').value, wait:$('wait').value,
+    stop:$('stop').value, trail:$('trail').value, cash:$('cash').value, years:$('years').value,
+  });
+  $('error').style.display = 'none';
+  try {
+    const rsp = await fetch('/api/discover/start?' + q, { method:'POST' });
+    if (rsp.status !== 409) {            // 409 = 已在掃描中,直接接上進度
+      const j = await rsp.json();
+      if (!rsp.ok) throw new Error(j.error || '啟動失敗');
+    }
+  } catch (e) {
+    $('error').textContent = e.message; $('error').style.display = 'block'; return;
+  }
+  $('dbtn').disabled = true;
+  $('discover').style.display = 'block';
+  $('d-status').textContent = '';
+  $('d-summary').style.display = 'none';
+  $('d-timing-wrap').style.display = 'none';
+  $('d-hold-wrap').style.display = 'none';
+  $('d-avoid').style.display = 'none';
+  $('d-progress').style.display = '';
+  $('discover').scrollIntoView({ behavior:'smooth', block:'start' });
+  pollDiscover();
+}
+
+async function pollDiscover(){
+  let s;
+  try { s = await (await fetch('/api/discover/status')).json(); }
+  catch { setTimeout(pollDiscover, 1500); return; }
+  const fill = document.querySelector('#d-progress .fill');
+  const ptext = document.querySelector('#d-progress .ptext');
+  if (s.phase === 'download') {
+    fill.style.width = Math.max(4, s.done / (s.total||1) * 30) + '%';
+    ptext.textContent = '下載歷史資料:' + s.current;
+  } else if (s.phase === 'analyze') {
+    fill.style.width = (30 + s.done / (s.total||1) * 70) + '%';
+    ptext.textContent = '蒙地卡羅評估:' + s.current + '(' + (s.done+1) + '/' + s.total + ')';
+  }
+  if (!s.finished) { setTimeout(pollDiscover, 800); return; }
+  fill.style.width = '100%'; ptext.textContent = '完成';
+  $('dbtn').disabled = false;
+  setTimeout(() => { $('d-progress').style.display = 'none'; }, 600);
+  renderDiscover(s);
+}
+
+function entryText(b){
+  return b.dip <= 0
+    ? '現價買入 ' + fmtPx(b.entry_price, 'USD')
+    : '掛限價 ' + fmtPx(b.entry_price, 'USD') + '(現價 -' + (b.dip*100).toFixed(0) + '%)';
+}
+function exitText(k){
+  const tg = $('target').value, st = $('stop').value, tr = $('trail').value;
+  switch (k) {
+    case 'fixed':      return '+' + tg + '% 即賣出';
+    case 'fixed_stop': return '+' + tg + '% 賣出;-' + st + '% 停損';
+    case 'trail':      return '+' + tg + '% 後 ' + tr + '% 移動停利';
+    default:           return '+' + tg + '% 後 ' + tr + '% 移停;-' + st + '% 停損';
+  }
+}
+function confBadge(d){
+  const wf = d.walk_forward;
+  const mad = (wf && wf.available) ? wf.mad[d.best.variant] : null;
+  if (mad == null) return '<span class="vbadge sm bad">低信心 · 樣本外不足</span>';
+  const pp = (mad*100).toFixed(1);
+  if (mad <= 0.10) return '<span class="vbadge sm ok">高信心 · 偏差 ' + pp + 'pp</span>';
+  if (mad <= 0.18) return '<span class="vbadge sm warn">中信心 · 偏差 ' + pp + 'pp</span>';
+  return '<span class="vbadge sm bad">低信心 · 偏差 ' + pp + 'pp</span>';
+}
+
+function renderDiscover(s){
+  const all = s.results || [];
+  const timing = all.filter(r => r.category === 'timing').sort((a,b) => b.best.excess - a.best.excess);
+  const hold   = all.filter(r => r.category === 'hold').sort((a,b) => b.benchmark.ann - a.benchmark.ann);
+  const avoid  = all.filter(r => r.category === 'avoid');
+  const failed = s.errors || [];
+
+  $('d-status').textContent = ' — 完成,共評估 ' + all.length + ' 檔';
+  $('d-summary').style.display = '';
+  $('d-summary').innerHTML = '掃描 ' + (all.length + failed.length) + ' 檔:<b>'
+    + timing.length + ' 檔擇時有優勢</b>、<b>' + hold.length + ' 檔適合買入持有</b>、'
+    + avoid.length + ' 檔建議避開' + (failed.length ? '、' + failed.length + ' 檔資料不足或失敗' : '')
+    + '。前 ' + Math.min(timing.length, REFINE_MAX) + ' 檔擇時標的正在進行完整精審(walk-forward 樣本外 + 熊市壓力測試)…';
+
+  // 一、擇時有優勢
+  if (timing.length) {
+    $('d-timing-wrap').style.display = '';
+    timing.forEach(r => { TRACK_PAYLOADS[r.ticker] = {
+      ticker: r.ticker, name: r.name, kind: 'timing', dip: r.best.dip,
+      entry_price: r.best.entry_price, variant: r.best.variant,
+      target: +$('target').value/100, stop: +$('stop').value/100, trail: +$('trail').value/100,
+      wait: +$('wait').value, max_hold: +$('maxhold').value,
+      spot_at_rec: r.current_price, expected_ann: r.best.account_ann, expected_days: r.best.days_p50,
+    }; });
+    $('d-timing').innerHTML = timing.map((r, i) => `
+      <tr class="clickable" data-t="${esc(r.ticker)}" id="drow-${esc(r.ticker)}">
+        <td style="font-family:var(--mono);color:var(--blue);font-weight:700">${esc(r.ticker)}</td>
+        <td>${esc(r.name)}</td>
+        <td>${entryText(r.best)}</td>
+        <td>${exitText(r.best.variant)}</td>
+        <td>${fmtPct(r.best.kelly, 0)}</td>
+        <td>${fmtDays(r.best.days_p50)}</td>
+        <td class="${cls(r.best.account_ann)}">${fmtSPct(r.best.account_ann)}</td>
+        <td class="${cls(r.best.excess)}">${fmtPp(r.best.excess)}</td>
+        <td class="d-stress">${i < REFINE_MAX ? '審核中…' : '—'}</td>
+        <td class="d-conf">${i < REFINE_MAX ? '審核中…' : '<span class="vbadge sm warn">未精審</span>'}</td>
+        <td><button class="btn-track" data-tk="${esc(r.ticker)}">追蹤</button></td>
+      </tr>`).join('');
+    bindTrackButtons($('d-timing'));
+    $('d-timing').querySelectorAll('tr').forEach(tr => tr.addEventListener('click', () => {
+      $('ticker').value = tr.dataset.t; $('form').requestSubmit();
+      window.scrollTo({ top:0, behavior:'smooth' });
+    }));
+    refineTiming(timing.slice(0, REFINE_MAX));
+  } else {
+    $('d-timing-wrap').style.display = '';
+    $('d-timing').innerHTML = '<tr><td colspan="11" style="text-align:left;color:var(--muted)">'
+      + '本次掃描沒有任何標的的擇時策略「同時」勝過單純持有與現金(現金利率 +2pp 門檻)— '
+      + '這是常見且誠實的結果:對多數大型股,最好的操作就是買入後別動;'
+      + '少數震盪標的雖然擇時贏過持有,但絕對報酬不如現金,不值得冒險。請看下方「適合買入持有」清單。</td></tr>';
+  }
+
+  // 二、適合買入持有(前 15 檔直接顯示,其餘摺疊)
+  if (hold.length) {
+    $('d-hold-wrap').style.display = '';
+    const TOP = 15;
+    hold.forEach(r => { TRACK_PAYLOADS['H:' + r.ticker] = {
+      ticker: r.ticker, name: r.name, kind: 'hold', entry_price: r.current_price,
+      spot_at_rec: r.current_price, expected_ann: r.benchmark.ann,
+    }; });
+    const rowHtml = r => `
+      <tr class="clickable" data-t="${esc(r.ticker)}">
+        <td style="font-family:var(--mono);color:var(--blue);font-weight:700">${esc(r.ticker)}</td>
+        <td>${esc(r.name)}</td>
+        <td>${fmtPx(r.current_price, 'USD')}</td>
+        <td class="${cls(r.benchmark.ann)}">${fmtSPct(r.benchmark.ann)}</td>
+        <td class="dn">${fmtSPct(r.benchmark.total_p10)}</td>
+        <td>${fmtPct(r.benchmark.kelly_bh, 0)}</td>
+        <td><button class="btn-track" data-tk="H:${esc(r.ticker)}">追蹤</button></td>
+      </tr>`;
+    $('d-hold').innerHTML = hold.slice(0, TOP).map(rowHtml).join('')
+      + (hold.length > TOP
+        ? `<tr id="d-hold-more" class="clickable"><td colspan="7" style="text-align:center;color:var(--muted)">顯示其餘 ${hold.length - TOP} 檔 ▾</td></tr>`
+        : '');
+    if (hold.length > TOP) $('d-hold-more').addEventListener('click', ev => {
+      ev.stopPropagation();
+      $('d-hold-more').outerHTML = hold.slice(TOP).map(rowHtml).join('');
+      bindHoldRows();
+    });
+    bindHoldRows();
+  }
+  function bindHoldRows(){
+    bindTrackButtons($('d-hold'));
+    $('d-hold').querySelectorAll('tr[data-t]').forEach(tr => {
+      if (tr.dataset.bound) return;
+      tr.dataset.bound = '1';
+      tr.addEventListener('click', () => {
+        $('ticker').value = tr.dataset.t; $('form').requestSubmit();
+        window.scrollTo({ top:0, behavior:'smooth' });
+      });
+    });
+  }
+
+  // 高相關群組提示
+  const clus = s.clusters || [];
+  if (clus.length) {
+    $('d-clusters').style.display = '';
+    $('d-clusters').innerHTML = '<b style="color:var(--text)">高相關群組(近一年日報酬相關 > 0.8,漲跌同步,應合計視為同一注):</b><br>'
+      + clus.map((g, i) => '⬤ ' + g.map(esc).join('・')).join('  ')
+      + '<br>同一群內請以「群」為單位分配倉位(例如群內合計不超過單檔 Kelly 上限),避免不知不覺重壓同一個產業賭注。';
+  }
+
+  // 輪動回測區
+  $('d-rotation').style.display = '';
+  $('rot-out').innerHTML = '';
+
+  // 三、避開
+  if (avoid.length || failed.length) {
+    $('d-avoid').style.display = '';
+    $('d-avoid').querySelector('summary').textContent =
+      '三、建議避開(' + avoid.length + ' 檔)' + (failed.length ? ' 與資料不足(' + failed.length + ' 檔)' : '');
+    $('d-avoid-lst').innerHTML =
+      avoid.map(r => '<span>' + esc(r.ticker) + '</span>持有年化 ' + fmtSPct(r.benchmark.ann)
+        + '、最佳策略年化 ' + fmtSPct(r.best.account_ann) + '(不如現金或無優勢)').join(' · ')
+      + (failed.length ? '<br>' + failed.map(f => '<span>' + esc(f.ticker) + '</span>' + esc(f.reason)).join(' · ') : '');
+  }
+}
+
+function bindTrackButtons(tbody){
+  tbody.querySelectorAll('[data-tk]').forEach(b => {
+    if (b.dataset.bound) return;
+    b.dataset.bound = '1';
+    b.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const pl = TRACK_PAYLOADS[b.dataset.tk];
+      if (pl) addTrack(pl, b);
+    });
+  });
+}
+
+$('rotbtn').addEventListener('click', runRotation);
+async function runRotation(){
+  const btn = $('rotbtn');
+  btn.disabled = true; btn.textContent = '回測中…';
+  const q = buildQuery(''); q.delete('ticker');
+  q.set('variant', $('exitvar').value); q.set('max_pos', 5);
+  try {
+    const rsp = await fetch('/api/rotation?' + q);
+    const j = await rsp.json();
+    if (!rsp.ok) throw new Error(j.error || '失敗');
+    if (!j.available) throw new Error(j.reason || '無法回測');
+    $('rot-out').innerHTML = `
+      <div class="vtext">${j.n_tickers} 檔標的 · ${esc(j.from)} ~ ${esc(j.to)}(${j.years} 年)
+        · 出場:${VLABEL[j.variant]} · 最大同時持倉 ${j.max_pos} 檔。
+        等權買入持有基準:年化 <b class="${cls(j.bh.ann)}">${fmtSPct(j.bh.ann)}</b>、最大回撤 ${fmtPct(j.bh.max_dd)}。</div>
+      <div class="tbl-wrap"><table style="min-width:760px">
+        <thead><tr><th>進場訊號</th><th>組合年化</th><th>最大回撤</th><th>交易數</th>
+          <th>勝率</th><th>平均持有</th><th>平均曝險</th><th>vs 等權持有</th></tr></thead>
+        <tbody>
+        ${j.rows.map(r => {
+          const exx = r.ann - j.bh.ann;
+          const nm = r.dip <= 0 ? '有空位即買(持續再投入)' : '回檔 ' + (r.dip*100).toFixed(0) + '% 自近 63 日高點';
+          return `<tr><td>${nm}</td>
+            <td class="${cls(r.ann)}">${fmtSPct(r.ann)}</td>
+            <td class="dn">${fmtPct(r.max_dd)}</td>
+            <td>${r.trades}</td><td>${fmtPct(r.win_rate,0)}</td>
+            <td>${fmtDays(r.avg_hold)}</td><td>${fmtPct(r.avg_exposure,0)}</td>
+            <td class="${cls(exx)}">${fmtPp(exx)}</td></tr>`;
+        }).join('')}
+        </tbody></table></div>`;
+  } catch (e) {
+    $('rot-out').innerHTML = '<div class="vtext" style="color:var(--red)">' + esc(e.message || e) + '</div>';
+  } finally {
+    btn.disabled = false; btn.textContent = '執行輪動回測';
+  }
+}
+
+async function refineTiming(list){
+  for (const r of list) {
+    const row = $('drow-' + r.ticker);
+    if (!row) continue;
+    try {
+      const d = await fetchAnalyze(r.ticker);   // 完整分析(含 walk-forward 與壓力測試)
+      const e = d.entries[d.best.idx], v = e.variants[d.best.variant];
+      TRACK_PAYLOADS[r.ticker] = {
+        ticker: d.ticker, name: d.name, kind: 'timing', dip: e.dip,
+        entry_price: e.entry_price, variant: d.best.variant,
+        target: d.params.target, stop: d.params.stop, trail: d.params.trail,
+        wait: d.params.wait, max_hold: d.params.max_hold,
+        spot_at_rec: d.current_price, expected_ann: d.best.account_ann, expected_days: v.days_p50,
+      };
+      row.cells[1].textContent = d.name;
+      row.cells[2].textContent = entryText({ ...d.best, dip:e.dip, entry_price:e.entry_price });
+      row.cells[3].textContent = exitText(d.best.variant);
+      row.cells[4].textContent = fmtPct(v.kelly, 0);
+      row.cells[5].textContent = fmtDays(v.days_p50);
+      row.cells[6].textContent = fmtSPct(d.best.account_ann);
+      row.cells[6].className = cls(d.best.account_ann);
+      const ex = d.best.account_ann - d.benchmark.ann;
+      row.cells[7].textContent = fmtPp(ex);
+      row.cells[7].className = cls(ex);
+      const stress = d.stress.available
+        ? d.stress.rows[d.best.idx].variants[d.best.variant].account_ann : null;
+      row.querySelector('.d-stress').innerHTML =
+        stress == null ? '—' : '<span class="' + cls(stress) + '">' + fmtSPct(stress) + '</span>';
+      row.querySelector('.d-conf').innerHTML = confBadge(d);
+      const cashFloor = (+$('cash').value)/100 + 0.02;
+      if (ex <= 0 || d.best.account_ann < cashFloor) row.classList.add('dim');   // 精審後優勢消失 → 誠實降級
+    } catch {
+      row.querySelector('.d-stress').textContent = '—';
+      row.querySelector('.d-conf').innerHTML = '<span class="vbadge sm bad">精審失敗</span>';
+    }
+  }
+}
+
 /* ---------- URL 帶參數自動分析 ---------- */
 (function(){
   const p = new URLSearchParams(location.search);
+  if (p.get('track')) {                  // /?track=1 直接開啟追蹤紀錄
+    $('trackpanel').style.display = 'block';
+    loadTrack();
+    return;
+  }
+  if (p.get('discover')) {               // /?discover=1 直接進探索模式(接上既有結果或啟動)
+    fetch('/api/discover/status').then(r => r.json()).then(s => {
+      if (s.finished && s.results) {
+        $('discover').style.display = 'block';
+        $('d-progress').style.display = 'none';
+        renderDiscover(s);
+      } else startDiscover();
+    }).catch(() => startDiscover());
+    return;
+  }
   const t = p.get('ticker');
   if (!t) { $('ticker').focus(); return; }
   $('ticker').value = t;
   for (const [k, id] of [['target','target'],['max_hold','maxhold'],['wait','wait'],['paths','paths'],
-                         ['years','years'],['stop','stop'],['trail','trail'],['cash','cash'],['exit','exitvar']])
+                         ['years','years'],['stop','stop'],['trail','trail'],['cash','cash'],['exit','exitvar'],
+                         ['cond','cond'],['fat','fat'],['divtax','divtax']])
     if (p.get(k)) $(id).value = p.get(k);
   $('form').requestSubmit();
 })();

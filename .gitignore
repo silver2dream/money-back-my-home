@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 執行期資料(建議追蹤資料庫,使用者本機各自累積)
+tracker.db
+
+# 驗證用臨時截圖
+_*.png
