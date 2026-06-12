@@ -5,8 +5,13 @@ __pycache__/
 .venv/
 venv/
 
-# 執行期資料(建議追蹤資料庫,使用者本機各自累積)
+# 執行期資料(本機開發資料庫;舊版為 tracker.db)
+local.db
+local.db-*
 tracker.db
+
+# 環境變數(含金鑰,絕不進版控)
+.env
 
 # 驗證用臨時截圖
 _*.png

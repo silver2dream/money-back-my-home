@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
 :root{
   --bg:#0A0F1C; --surface:#121A2B; --surface-2:#182238; --border:#243150;
@@ -163,6 +164,32 @@ tbody tr.bench-row td{border-bottom:1px dashed var(--border);font-style:normal}
 .vbadge.bad{color:var(--red);background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.35)}
 .vbadge.sm{font-size:.72rem;padding:2px 8px}
 
+/* 登入 */
+#auth-overlay{display:none;position:fixed;inset:0;z-index:100;background:rgba(6,10,20,.88);
+  backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:20px}
+.auth-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:30px;width:100%;max-width:400px}
+.auth-card h2{font-size:1.1rem;font-weight:700;margin-bottom:6px}
+.auth-card .sub{color:var(--muted);font-size:.84rem;margin-bottom:18px}
+.auth-card input[type=email],.auth-card input[type=password]{width:100%;background:var(--bg);
+  border:1px solid var(--border);color:var(--text);border-radius:9px;padding:11px 13px;
+  font-size:.95rem;margin-bottom:11px;outline:none}
+.auth-card input:focus{border-color:var(--blue)}
+.auth-terms{display:flex;gap:9px;align-items:flex-start;font-size:.76rem;color:var(--muted);
+  margin:4px 0 14px;line-height:1.6}
+.auth-terms input{margin-top:3px;flex:none}
+.auth-btns{display:flex;gap:10px}
+.auth-btns button{flex:1;border-radius:9px;padding:11px;font-size:.95rem;font-weight:700;
+  font-family:var(--sans);cursor:pointer;transition:opacity .2s}
+#auth-login{background:var(--blue);color:#06122B;border:none}
+#auth-signup{background:transparent;color:var(--blue);border:1px solid var(--blue)}
+.auth-btns button:disabled{opacity:.5;cursor:not-allowed}
+#auth-msg{margin-top:12px;font-size:.82rem;min-height:1.2em}
+#auth-msg.err{color:var(--red)} #auth-msg.ok{color:var(--green)}
+#user-chip{display:none;margin-left:auto;align-items:center;gap:10px;font-size:.8rem;color:var(--muted)}
+#user-chip .em{font-family:var(--mono);color:var(--text)}
+#user-chip a{cursor:pointer;font-size:.78rem}
+
 footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);
   color:var(--muted);font-size:.78rem;line-height:1.7}
 
@@ -189,7 +216,25 @@ footer{margin-top:30px;padding-top:18px;border-top:1px solid var(--border);
     <h1>蒙地卡羅美股策略分析</h1>
     <p>進場點位 × 出場規則 × 機會成本入帳的帳戶年化,與單純持有正面對決;含樣本外驗證與熊市壓力測試</p>
   </div>
+  <div id="user-chip"><span class="em" id="user-email"></span><a id="logout">登出</a></div>
 </header>
+
+<div id="auth-overlay">
+  <div class="auth-card">
+    <h2>登入 / 註冊</h2>
+    <div class="sub">使用 Email 登入,你的追蹤紀錄將跨裝置同步。</div>
+    <input id="auth-email" type="email" placeholder="email" autocomplete="email">
+    <input id="auth-pass" type="password" placeholder="密碼(至少 6 碼)" autocomplete="current-password">
+    <label class="auth-terms"><input id="auth-terms" type="checkbox">
+      我了解本工具為歷史資料的統計模擬與教育用途,所有機率與報酬皆為估計、不構成投資建議;
+      投資有風險,我將自行評估並承擔決策結果。(註冊必勾)</label>
+    <div class="auth-btns">
+      <button id="auth-login" type="button">登入</button>
+      <button id="auth-signup" type="button">註冊</button>
+    </div>
+    <div id="auth-msg"></div>
+  </div>
+</div>
 
 <section class="card" id="panel">
   <form id="form">
@@ -498,6 +543,75 @@ Chart.defaults.plugins.legend.labels.boxWidth = 12;
 Chart.defaults.plugins.legend.labels.boxHeight = 12;
 Chart.defaults.animation.duration = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 350;
 
+/* ---------- 認證(AUTH_MODE=none 時整段透明) ---------- */
+let SB = null, AUTH_MODE = 'none';
+
+async function authHeaders(){
+  if (AUTH_MODE !== 'supabase' || !SB) return {};
+  const { data } = await SB.auth.getSession();   // supabase-js 會自動刷新 token
+  return data && data.session ? { 'Authorization': 'Bearer ' + data.session.access_token } : {};
+}
+
+async function api(url, opts = {}){
+  const h = await authHeaders();
+  const rsp = await fetch(url, { ...opts, headers: { ...(opts.headers || {}), ...h } });
+  if (rsp.status === 401 && AUTH_MODE === 'supabase') {
+    showAuth();
+    throw new Error('請先登入');
+  }
+  return rsp;
+}
+
+function showAuth(){ document.getElementById('auth-overlay').style.display = 'flex'; }
+function hideAuth(){ document.getElementById('auth-overlay').style.display = 'none'; }
+function authMsg(t, ok){ const m = document.getElementById('auth-msg');
+  m.textContent = t; m.className = ok ? 'ok' : 'err'; }
+
+async function initAuth(){
+  let cfg = { auth_mode: 'none' };
+  try { cfg = await (await fetch('/api/config')).json(); } catch {}
+  AUTH_MODE = cfg.auth_mode || 'none';
+  if (AUTH_MODE !== 'supabase') { boot(); return; }
+
+  SB = window.supabase.createClient(cfg.supabase_url, cfg.supabase_anon_key);
+  const chip = document.getElementById('user-chip');
+  const setUser = email => {
+    chip.style.display = 'flex';
+    document.getElementById('user-email').textContent = email;
+  };
+  document.getElementById('logout').addEventListener('click', async () => {
+    await SB.auth.signOut(); location.reload();
+  });
+  document.getElementById('auth-login').addEventListener('click', async () => {
+    const { error } = await SB.auth.signInWithPassword({
+      email: document.getElementById('auth-email').value.trim(),
+      password: document.getElementById('auth-pass').value });
+    if (error) { authMsg('登入失敗:' + error.message); return; }
+    location.reload();
+  });
+  document.getElementById('auth-signup').addEventListener('click', async () => {
+    if (!document.getElementById('auth-terms').checked) {
+      authMsg('註冊前請先勾選同意聲明。'); return;
+    }
+    const { error } = await SB.auth.signUp({
+      email: document.getElementById('auth-email').value.trim(),
+      password: document.getElementById('auth-pass').value });
+    if (error) { authMsg('註冊失敗:' + error.message); return; }
+    authMsg('註冊成功!請至信箱點擊驗證連結後回來登入。', true);
+  });
+
+  const { data } = await SB.auth.getSession();
+  if (data && data.session) {
+    setUser(data.session.user.email);
+    boot();
+  } else {
+    showAuth();
+    SB.auth.onAuthStateChange((_ev, sess) => {
+      if (sess) { hideAuth(); setUser(sess.user.email); boot(); }
+    });
+  }
+}
+
 const VLABEL = { fixed:'固定目標', fixed_stop:'固定目標+停損', trail:'移動停利', trail_stop:'移動停利+停損' };
 const VKEYS = ['fixed','fixed_stop','trail','trail_stop'];
 
@@ -547,7 +661,7 @@ $('form').addEventListener('submit', async ev => {
 });
 
 async function fetchAnalyze(ticker){
-  const rsp = await fetch('/api/analyze?' + buildQuery(ticker));
+  const rsp = await api('/api/analyze?' + buildQuery(ticker));
   const json = await rsp.json();
   if (!rsp.ok) throw new Error(json.error || ('伺服器錯誤(' + rsp.status + ')'));
   return json;
@@ -982,7 +1096,7 @@ $('tkbtn').addEventListener('click', () => {
 async function addTrack(payload, btn){
   if (btn) { btn.disabled = true; btn.textContent = '記錄中…'; }
   try {
-    const rsp = await fetch('/api/track/add', { method:'POST',
+    const rsp = await api('/api/track/add', { method:'POST',
       headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(payload) });
     const j = await rsp.json();
     if (!rsp.ok) throw new Error(j.error || '失敗');
@@ -1005,7 +1119,7 @@ function trackDesc(r){
 async function loadTrack(){
   $('tk-tbody').innerHTML = '<tr><td colspan="10" style="text-align:left;color:var(--muted)">更新中(對最新收盤資料)…</td></tr>';
   let d;
-  try { d = await (await fetch('/api/track/list')).json(); }
+  try { d = await (await api('/api/track/list')).json(); }
   catch { $('tk-tbody').innerHTML = '<tr><td colspan="10" style="text-align:left;color:var(--red)">載入失敗</td></tr>'; return; }
   const s = d.summary || {};
   $('tk-summary').textContent = ' — 共 ' + s.total + ' 筆,進行中 ' + s.open + ',已結案 ' + s.closed
@@ -1031,7 +1145,7 @@ async function loadTrack(){
     </tr>`;
   }).join('');
   $('tk-tbody').querySelectorAll('[data-rm]').forEach(b => b.addEventListener('click', async () => {
-    await fetch('/api/track/remove?id=' + b.dataset.rm, { method:'POST' });
+    await api('/api/track/remove?id=' + b.dataset.rm, { method:'POST' });
     loadTrack();
   }));
 }
@@ -1049,7 +1163,7 @@ async function startDiscover(){
   });
   $('error').style.display = 'none';
   try {
-    const rsp = await fetch('/api/discover/start?' + q, { method:'POST' });
+    const rsp = await api('/api/discover/start?' + q, { method:'POST' });
     if (rsp.status !== 409) {            // 409 = 已在掃描中,直接接上進度
       const j = await rsp.json();
       if (!rsp.ok) throw new Error(j.error || '啟動失敗');
@@ -1071,7 +1185,7 @@ async function startDiscover(){
 
 async function pollDiscover(){
   let s;
-  try { s = await (await fetch('/api/discover/status')).json(); }
+  try { s = await (await api('/api/discover/status')).json(); }
   catch { setTimeout(pollDiscover, 1500); return; }
   const fill = document.querySelector('#d-progress .fill');
   const ptext = document.querySelector('#d-progress .ptext');
@@ -1250,7 +1364,7 @@ async function runRotation(){
   const q = buildQuery(''); q.delete('ticker');
   q.set('variant', $('exitvar').value); q.set('max_pos', 5);
   try {
-    const rsp = await fetch('/api/rotation?' + q);
+    const rsp = await api('/api/rotation?' + q);
     const j = await rsp.json();
     if (!rsp.ok) throw new Error(j.error || '失敗');
     if (!j.available) throw new Error(j.reason || '無法回測');
@@ -1318,8 +1432,8 @@ async function refineTiming(list){
   }
 }
 
-/* ---------- URL 帶參數自動分析 ---------- */
-(function(){
+/* ---------- 啟動(登入完成後執行;URL 帶參數自動分析) ---------- */
+function boot(){
   const p = new URLSearchParams(location.search);
   if (p.get('track')) {                  // /?track=1 直接開啟追蹤紀錄
     $('trackpanel').style.display = 'block';
@@ -1327,13 +1441,13 @@ async function refineTiming(list){
     return;
   }
   if (p.get('discover')) {               // /?discover=1 直接進探索模式(接上既有結果或啟動)
-    fetch('/api/discover/status').then(r => r.json()).then(s => {
+    api('/api/discover/status').then(r => r.json()).then(s => {
       if (s.finished && s.results) {
         $('discover').style.display = 'block';
         $('d-progress').style.display = 'none';
         renderDiscover(s);
       } else startDiscover();
-    }).catch(() => startDiscover());
+    }).catch(() => {});
     return;
   }
   const t = p.get('ticker');
@@ -1344,7 +1458,9 @@ async function refineTiming(list){
                          ['cond','cond'],['fat','fat'],['divtax','divtax']])
     if (p.get(k)) $(id).value = p.get(k);
   $('form').requestSubmit();
-})();
+}
+
+initAuth();
 </script>
 </body>
 </html>

@@ -22,7 +22,6 @@
 import math
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
 TRADING_DAYS = 252
 BLOCK_SIZE = 21          # bootstrap 區塊長度(約一個月),保留短期自相關
@@ -39,44 +38,16 @@ class EngineError(Exception):
 # ---------------------------------------------------------------- 資料層
 
 def fetch_history(ticker: str, years: int = 10):
-    ticker = ticker.strip().upper()
-    if not ticker or len(ticker) > 12:
-        raise EngineError("請輸入有效的股票代碼(例如 AAPL、NVDA、SPY)。")
-    tk = yf.Ticker(ticker)
+    """歷史資料(經 datasource 層:DB 快取 → Tiingo → yfinance → Stooq)。"""
+    from datasource import DataSourceError, get_history
     try:
-        df = tk.history(period=f"{years}y", interval="1d", auto_adjust=True)
-    except Exception as exc:
-        raise EngineError(f"下載 {ticker} 資料失敗:{exc}") from exc
-    if df is None or df.empty or "Close" not in df:
-        raise EngineError(f"找不到「{ticker}」的歷史資料,請確認代碼是否正確(美股代碼,例如 AAPL)。")
-
-    closes = df["Close"].dropna()
-    closes = closes[closes > 0]
+        closes, dates, meta = get_history(ticker, years)
+    except DataSourceError as exc:
+        raise EngineError(str(exc)) from exc
     if len(closes) < TRADING_DAYS:
-        raise EngineError(f"「{ticker}」歷史資料不足一年({len(closes)} 個交易日),樣本太少無法可靠模擬。")
-
-    name, currency, div_yield = ticker, "USD", 0.0
-    try:  # 近一年實際配息 ÷ 現價(info 的 dividendYield 各版本單位不一,不可靠)
-        if "Dividends" in df.columns:
-            paid = float(df["Dividends"].iloc[-TRADING_DAYS:].sum())
-            div_yield = float(np.clip(paid / float(closes.iloc[-1]), 0.0, 0.15))
-    except Exception:
-        pass
-    try:
-        fi = tk.fast_info
-        currency = getattr(fi, "currency", None) or "USD"
-    except Exception:
-        pass
-    try:
-        info = tk.info or {}
-        name = info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        pass
-
-    dates = [d.strftime("%Y-%m-%d") for d in closes.index]
-    meta = {"ticker": ticker, "name": name, "currency": currency,
-            "as_of": dates[-1], "div_yield": div_yield}
-    return closes.to_numpy(dtype=float), dates, meta
+        raise EngineError(f"「{meta.get('ticker', ticker)}」歷史資料不足一年"
+                          f"({len(closes)} 個交易日),樣本太少無法可靠模擬。")
+    return closes, dates, meta
 
 
 def basic_stats(closes: np.ndarray) -> dict:
@@ -796,48 +767,34 @@ def quick_one(closes: np.ndarray, ticker: str, name: str, p: dict,
 
 def discover_scan(tickers: dict, p: dict, n_paths: int = 2000, years: int = 10,
                   progress=None) -> dict:
-    """掃描整個股票池:分批批量下載 → 逐檔 quick_one。progress(phase, done, total, label)。"""
+    """掃描整個股票池:datasource 批量取得(DB 快取優先)→ 逐檔 quick_one。"""
+    from datasource import get_history_many
     items = list(tickers.items())
     total = len(items)
-    closes_map, errors = {}, []
+    data = get_history_many([t for t, _ in items], years, progress=progress)
 
-    CHUNK = 30
-    for ci in range(0, total, CHUNK):
-        chunk = [t for t, _ in items[ci: ci + CHUNK]]
-        if progress:
-            progress("download", ci, total, f"{chunk[0]} … {chunk[-1]}")
-        try:
-            df = yf.download(chunk, period=f"{years}y", interval="1d", auto_adjust=True,
-                             progress=False, group_by="ticker", threads=True)
-        except Exception as exc:
-            errors.extend({"ticker": t, "reason": f"下載失敗:{exc}"} for t in chunk)
-            continue
-        for t in chunk:
-            try:
-                col = df[t]["Close"] if isinstance(df.columns, pd.MultiIndex) else df["Close"]
-                c = col.dropna()
-                c = c[c > 0]
-                if len(c) >= TRADING_DAYS:
-                    closes_map[t] = c            # 保留 Series(日期索引,供聚類與輪動回測)
-                else:
-                    errors.append({"ticker": t, "reason": "資料不足一年"})
-            except Exception:
-                errors.append({"ticker": t, "reason": "無資料"})
-
-    results = []
+    closes_map, errors, results = {}, [], []
+    for t, _ in items:
+        if t not in data:
+            errors.append({"ticker": t, "reason": "無資料或下載失敗"})
     for i, (t, nm) in enumerate(items):
-        if t not in closes_map:
+        if t not in data:
             continue
+        closes, dates, meta = data[t]
+        if len(closes) < TRADING_DAYS:
+            errors.append({"ticker": t, "reason": "資料不足一年"})
+            continue
+        closes_map[t] = pd.Series(closes, index=pd.to_datetime(dates))
         if progress:
             progress("analyze", i, total, t)
         try:
-            results.append(quick_one(closes_map[t].to_numpy(dtype=float), t, nm, p, n_paths))
+            display = meta.get("name") if meta.get("name") not in (None, t) else nm
+            results.append(quick_one(closes, t, display or nm, p, n_paths))
         except Exception as exc:
             errors.append({"ticker": t, "reason": f"分析失敗:{exc}"})
 
     clusters = correlation_clusters(closes_map, [r["ticker"] for r in results])
-    return {"results": results, "errors": errors, "clusters": clusters,
-            "series": closes_map}
+    return {"results": results, "errors": errors, "clusters": clusters}
 
 
 def correlation_clusters(series_map: dict, tickers: list, thr: float = 0.8) -> list:
